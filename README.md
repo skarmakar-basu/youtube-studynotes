@@ -10,7 +10,9 @@ Convert YouTube videos into structured, consultant-optimized study notes using A
 - **Automatic transcription** — Fetches YouTube's auto-generated captions
 - **Custom note format** — Uses your `gpt-inst.md` template for consistent output
 - **Smart overwriting** — Re-running on the same video updates the existing note
+- **Transcript caching** — Transcripts are saved locally to avoid re-fetching
 - **Progress indicator** — Visual feedback during generation
+- **Token usage stats** — See context usage before selecting a provider
 
 ---
 
@@ -26,74 +28,34 @@ Convert YouTube videos into structured, consultant-optimized study notes using A
 
 ## Quick Start
 
-### 1. Activate Environment
+### 1. Clone the Repository
 ```bash
-cd /Users/saurabh.karmakar/Movies/YouTube
-source venv/bin/activate
+git clone https://github.com/skarmakar-basu/youtube-studynotes.git
+cd youtube-studynotes
 ```
 
-### 2. Run the App
+### 2. Set Up Virtual Environment
 ```bash
-python app.py
-```
-
-Or with a URL directly:
-```bash
-python app.py "https://www.youtube.com/watch?v=VIDEO_ID"
-```
-
-### 3. Select Provider & Wait
-```
-==================================================
-  🤖 Select AI Provider
-==================================================
-
-  1. Google Gemini 2.5 Flash [FREE]
-     Context: 1M tokens | Status: ✅
-
-  2. Groq (Llama 3.3 70B) [FREE]
-     Context: 128K tokens | Status: ✅
-
-  3. Z.AI GLM-4.6 [PAID]
-     Context: 32K tokens | Status: ✅
-
-Enter choice (1-3): 1
-```
-
-### 4. Find Your Notes
-```
-YouTubeNotes/2025-12-06_Video_Title.md
-```
-
----
-
-## One-Liner
-
-```bash
-cd /Users/saurabh.karmakar/Movies/YouTube && source venv/bin/activate && python app.py "YOUTUBE_URL"
-```
-
----
-
-## Setup (First Time Only)
-
-### Install Dependencies
-```bash
-cd /Users/saurabh.karmakar/Movies/YouTube
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # On macOS/Linux
+# OR
+venv\Scripts\activate     # On Windows
+```
+
+### 3. Install Dependencies
+```bash
 pip install -r requirements.txt
 ```
 
-### Configure API Keys
+### 4. Configure API Keys
 
-Create a `.env` file with your API keys:
+Create a `.env` file in the project root:
 
 ```bash
-nano .env
+cp .env.example .env  # If example exists, or create manually
 ```
 
-Add the keys you have:
+Add your API keys (you only need ONE provider):
 
 ```env
 # Google Gemini (FREE) — https://aistudio.google.com
@@ -106,7 +68,57 @@ GROQ_API_KEY=your_key_here
 ZAI_API_KEY=your_key_here
 ```
 
-**Note:** You only need ONE provider configured.
+### 5. Run the App
+```bash
+python app.py
+```
+
+Or with a URL directly:
+```bash
+python app.py "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+---
+
+## Usage
+
+### Interactive Mode
+```bash
+python app.py
+```
+You'll be prompted for a YouTube URL, then shown provider options with token usage stats.
+
+### Direct URL Mode
+```bash
+python app.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+### Provider Selection
+```
+==================================================
+  🤖 Select AI Provider
+==================================================
+
+  📊 Transcript: ~5,432 words (~7,062 tokens)
+------------------------------------------------------------
+
+  1. Google Gemini 2.5 Flash [FREE] ⭐ Recommended
+     Context: 1M tokens | ✅ Usage: 0.7%
+
+  2. Groq (Llama 3.3 70B) [FREE]
+     Context: 128K tokens | ✅ Usage: 5.5%
+
+  3. Z.AI GLM-4.6 [PAID]
+     Context: 32K tokens | ✅ Usage: 22.1%
+
+Enter choice (1-3): 1
+```
+
+### Find Your Notes
+Generated notes are saved to:
+```
+YouTubeNotes/<video_id>_<video_title>_<model>.md
+```
 
 ---
 
@@ -126,18 +138,20 @@ ZAI_API_KEY=your_key_here
 
 ---
 
-## File Structure
+## Project Structure
 
 ```
-YouTube/
+youtube-studynotes/
 ├── app.py              # Main application
-├── gpt-inst.md         # Note format template
+├── gpt-inst.md         # Note format template (customizable)
 ├── requirements.txt    # Python dependencies
-├── .env                # API keys (private)
-├── venv/               # Virtual environment
+├── .env                # API keys (create this, not committed)
+├── .gitignore          # Git ignore rules
 ├── README.md           # This guide
-└── YouTubeNotes/       # Generated notes
-    └── 2025-12-06_Video_Title.md
+└── YouTubeNotes/       # Generated notes output
+    ├── transcripts/    # Cached transcripts
+    │   └── <video_id>.txt
+    └── <video_id>_<title>_<model>.md
 ```
 
 ---
@@ -147,14 +161,15 @@ YouTube/
 Edit `gpt-inst.md` to change how notes are structured. The AI follows this template when generating notes.
 
 Current template sections:
-1. Title & Discovery Tags
-2. The Hook
-3. Core Concept
-4. How It Works
-5. Three Scenarios
-6. Consultant's Cheat Sheet
-7. Key Terms Glossary
-8. Memory Anchors
+1. **Title & Discovery Tags** — Clear title with hashtags
+2. **The Hook** — Why this topic matters
+3. **Core Concept** — The WHAT and WHY
+4. **How It Works** — The mechanics and HOW
+5. **Three Perspectives** — Real-world, technical, and pitfalls
+6. **Practical Cheat Sheet** — Quick reference bullets
+7. **Key Terms Glossary** — Important definitions
+8. **Memory Anchors** — Summary, analogy, flashcards, deeper questions
+9. **Key Moments** — Notable timestamps (optional)
 
 ---
 
@@ -167,16 +182,28 @@ Current template sections:
 | **No transcript found** | Video has no captions, try another video |
 | **Response truncated** | Rare with Gemini's 1M context; try Gemini for long videos |
 | **Timeout** | Long videos take 1-3 min; be patient or try Groq (faster) |
-| **Module not found** | Run `source venv/bin/activate` first |
+| **Module not found** | Ensure virtual environment is activated: `source venv/bin/activate` |
+| **Permission denied** | Check file permissions in YouTubeNotes folder |
 
 ---
 
 ## Technical Details
 
-- **Transcription**: `youtube-transcript-api` (fetches YouTube's existing captions)
-- **Video metadata**: `yt-dlp` (title extraction)
-- **API calls**: `requests` (direct REST calls, no SDK dependencies)
-- **Configuration**: `python-dotenv` (loads `.env` file)
+- **Transcription**: `youtube-transcript-api` — Fetches YouTube's existing captions
+- **Video metadata**: `yt-dlp` — Title, channel, duration extraction
+- **API calls**: `requests` — Direct REST calls, no SDK dependencies
+- **Configuration**: `python-dotenv` — Loads `.env` file
+- **Python**: 3.8+ recommended
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Commit changes: `git commit -m "Add your feature"`
+4. Push to branch: `git push origin feature/your-feature`
+5. Open a Pull Request
 
 ---
 
