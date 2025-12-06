@@ -8,11 +8,12 @@ Convert YouTube videos into structured, consultant-optimized study notes using A
 
 - **Multi-provider support** — Choose between Google Gemini, Groq, or Z.AI
 - **Automatic transcription** — Fetches YouTube's auto-generated captions
+- **YouTube chapters integration** — Uses built-in video chapters as key moments when available
 - **Custom note format** — Uses your `gpt-inst.md` template for consistent output
 - **Smart overwriting** — Re-running on the same video updates the existing note
 - **Transcript caching** — Transcripts are saved locally to avoid re-fetching
 - **Progress indicator** — Visual feedback during generation
-- **Token usage stats** — See context usage before selecting a provider
+- **Token usage stats** — See context usage and rate limits before selecting a provider
 
 ---
 
@@ -21,7 +22,7 @@ Convert YouTube videos into structured, consultant-optimized study notes using A
 | Provider | Model | Context | Free Tier | Best For |
 |----------|-------|---------|-----------|----------|
 | **Google Gemini** | gemini-2.5-flash | 1M tokens | ✅ 15 req/min | Long videos, high quality |
-| **Groq** | Llama 3.3 70B | 128K tokens | ✅ ~30 req/min | Fast results |
+| **Groq** | Llama 3.3 70B | 128K tokens | ✅ 12K TPM limit | Short videos, fast results |
 | **Z.AI** | GLM-4.6 | 32K tokens | ❌ Paid | Existing subscribers |
 
 ---
@@ -99,20 +100,22 @@ python app.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
   🤖 Select AI Provider
 ==================================================
 
-  📊 Transcript: ~5,432 words (~7,062 tokens)
+  📊 Transcript: ~15,000 words (~19,500 tokens)
 ------------------------------------------------------------
 
   1. Google Gemini 2.5 Flash [FREE] ⭐ Recommended
-     Context: 1M tokens | ✅ Usage: 0.7%
+     Context: 1M tokens | ✅ Usage: 1.9%
 
   2. Groq (Llama 3.3 70B) [FREE]
-     Context: 128K tokens | ✅ Usage: 5.5%
+     Context: 128K tokens | ⚠️ Exceeds 12K TPM rate limit
 
   3. Z.AI GLM-4.6 [PAID]
-     Context: 32K tokens | ✅ Usage: 22.1%
+     Context: 32K tokens | ✅ Usage: 60.9%
 
 Enter choice (1-3): 1
 ```
+
+> **Note:** Groq's free tier has a 12K tokens-per-minute (TPM) limit. For longer transcripts, use Gemini instead.
 
 ### Find Your Notes
 Generated notes are saved to:
@@ -169,7 +172,7 @@ Current template sections:
 6. **Practical Cheat Sheet** — Quick reference bullets
 7. **Key Terms Glossary** — Important definitions
 8. **Memory Anchors** — Summary, analogy, flashcards, deeper questions
-9. **Key Moments** — Notable timestamps (optional)
+9. **Key Moments** — Clickable timestamps (uses YouTube chapters when available, otherwise AI-generated)
 
 ---
 
@@ -180,6 +183,7 @@ Current template sections:
 | **No API keys configured** | Add at least one key to `.env` |
 | **Transcripts are disabled** | Video owner turned off captions, try another video |
 | **No transcript found** | Video has no captions, try another video |
+| **Groq 413: Exceeds TPM limit** | Transcript too large for Groq's 12K TPM free tier; use Gemini instead |
 | **Response truncated** | Rare with Gemini's 1M context; try Gemini for long videos |
 | **Timeout** | Long videos take 1-3 min; be patient or try Groq (faster) |
 | **Module not found** | Ensure virtual environment is activated: `source venv/bin/activate` |
@@ -190,7 +194,7 @@ Current template sections:
 ## Technical Details
 
 - **Transcription**: `youtube-transcript-api` — Fetches YouTube's existing captions
-- **Video metadata**: `yt-dlp` — Title, channel, duration extraction
+- **Video metadata**: `yt-dlp` — Title, channel, duration, and chapters extraction
 - **API calls**: `requests` — Direct REST calls, no SDK dependencies
 - **Configuration**: `python-dotenv` — Loads `.env` file
 - **Python**: 3.8+ recommended
