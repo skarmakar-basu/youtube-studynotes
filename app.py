@@ -57,6 +57,7 @@ PROVIDERS = {
         "env_key": "GROQ_API_KEY",
         "context": "128K tokens",
         "context_tokens": 128_000,
+        "rate_limit_tpm": 12_000,  # Free tier TPM limit
         "free": True,
     },
     "zai": {
@@ -148,23 +149,30 @@ def select_provider_with_stats(word_count: int) -> str:
     provider_keys = list(PROVIDERS.keys())
     available = get_available_providers()
     
-    # Find best recommendation (available provider with lowest usage that fits)
+    # Find best recommendation (available provider with lowest usage that fits and doesn't exceed rate limit)
     best_provider = None
     best_usage = float('inf')
     for key, config in PROVIDERS.items():
         if key in available:
             usage = (estimated_tokens / config["context_tokens"]) * 100
-            if usage < 80 and usage < best_usage:  # Under 80% is safe
+            rate_limit = config.get("rate_limit_tpm")
+            exceeds_rate_limit = rate_limit and estimated_tokens > rate_limit
+            if usage < 80 and usage < best_usage and not exceeds_rate_limit:
                 best_usage = usage
                 best_provider = key
 
     for idx, (key, config) in enumerate(PROVIDERS.items(), 1):
         is_available = key in available
         usage_pct = (estimated_tokens / config["context_tokens"]) * 100
+        rate_limit = config.get("rate_limit_tpm")
+        exceeds_rate_limit = rate_limit and estimated_tokens > rate_limit
         
         # Status indicators
         if not is_available:
             status = "❌ (no API key)"
+            recommend = ""
+        elif exceeds_rate_limit:
+            status = f"⚠️  Exceeds {rate_limit // 1000}K TPM rate limit"
             recommend = ""
         elif usage_pct > 80:
             status = f"⚠️  Usage: {usage_pct:.0f}% (may truncate)"
@@ -317,11 +325,22 @@ PROVIDER_FUNCTIONS: Dict[str, Callable[[str, str], str]] = {
 }
 
 
-def generate_notes(provider: str, system_prompt: str, transcript: str, video_title: str) -> str:
+def generate_notes(provider: str, system_prompt: str, transcript: str, video_title: str, video_id: str, chapters: list = None) -> str:
     """Generate study notes using the selected provider."""
+    
+    # Build chapters section if available
+    chapters_info = ""
+    if chapters:
+        chapters_info = "\n\nYouTube Chapters (use these as Key Moments):\n"
+        for ch in chapters:
+            chapters_info += f"- [{ch['time']}] ({ch['seconds']}s) {ch['title']}\n"
+        chapters_info += "\nNote: Chapters are provided. Use these for the KEY MOMENTS section instead of generating your own.\n"
+    
     user_message = (
         f"Create study notes from this YouTube video transcript.\n\n"
-        f"Video Title: {video_title}\n\n"
+        f"Video Title: {video_title}\n"
+        f"Video ID: {video_id}"
+        f"{chapters_info}\n\n"
         f"Transcript:\n{transcript}"
     )
 
@@ -375,21 +394,35 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def get_video_info(video_id: str) -> Dict[str, str]:
-    """Fetch video metadata using yt-dlp."""
+def get_video_info(video_id: str) -> Dict[str, any]:
+    """Fetch video metadata including chapters using yt-dlp."""
     try:
         import yt_dlp
 
         with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            
+            # Extract chapters if available
+            chapters = []
+            if info.get("chapters"):
+                for ch in info["chapters"]:
+                    start_seconds = int(ch["start_time"])
+                    minutes, seconds = divmod(start_seconds, 60)
+                    chapters.append({
+                        "time": f"{minutes}:{seconds:02d}",
+                        "seconds": start_seconds,
+                        "title": ch["title"],
+                    })
+            
             return {
                 "title": info.get("title", video_id),
                 "channel": info.get("channel", info.get("uploader", "Unknown")),
                 "duration": format_duration(info.get("duration")),
+                "chapters": chapters,
             }
     except Exception as e:
         print(f"   Warning: Could not fetch video info ({e})")
-        return {"title": video_id, "channel": "Unknown", "duration": "Unknown"}
+        return {"title": video_id, "channel": "Unknown", "duration": "Unknown", "chapters": []}
 
 
 def fetch_transcript(video_id: str) -> str:
@@ -586,6 +619,10 @@ def main():
         print(f"   Title: {video_info['title']}")
         print(f"   Channel: {video_info['channel']}")
         print(f"   Duration: {video_info['duration']}")
+        if video_info.get("chapters"):
+            print(f"   Chapters: {len(video_info['chapters'])} found ✓")
+        else:
+            print(f"   Chapters: None (LLM will generate key moments)")
 
         # Check transcript cache first
         print("📜 Fetching transcript...")
@@ -608,7 +645,14 @@ def main():
         print(f"   Loaded: {SYSTEM_PROMPT_FILE}")
 
         # Generate and save
-        notes = generate_notes(provider, system_prompt, transcript, video_info["title"])
+        notes = generate_notes(
+            provider,
+            system_prompt,
+            transcript,
+            video_info["title"],
+            video_id,
+            chapters=video_info.get("chapters", []),
+        )
 
         print("💾 Saving notes...")
         filepath = save_notes(

@@ -79,13 +79,26 @@ Format: **Q:** Question | **A:** Answer (1-2 sentences)
 
 **3 Deeper Questions:** Synthesis questions like "How would you explain this to a skeptic?" or "What breaks if this assumption fails?"
 
-### 8. KEY MOMENTS (Optional)
-If specific moments in the video are worth revisiting, note approximate timestamps:
-- [~2:00] The core analogy explanation
-- [~8:30] Step-by-step walkthrough begins
-- [~15:00] Common mistakes discussed
+### 8. KEY MOMENTS
 
-Only include if the video has clear, distinct moments worth bookmarking. Skip for short videos or videos without notable timestamp-worthy sections.
+**If YouTube chapters are provided in the input:**
+Use them directly as key moments. Format each chapter as a clickable link with a 1-2 sentence summary based on what that section covers in the transcript. The chapters include timestamps in seconds—use those for the `t=` parameter.
+
+**If NO chapters are provided:**
+Create a navigable timeline by identifying 5-8 key moments from the transcript.
+
+**Format:**
+**[[MM:SS]](https://www.youtube.com/watch?v={{VIDEO_ID}}&t=XXs) Title**
+1-2 sentence summary of what this section covers and why it's worth revisiting.
+
+**Rules:**
+- Convert MM:SS to seconds for the `t=` parameter (e.g., 3:20 → 200s)
+- Each summary should be self-contained — readers should understand the content without watching
+- Skip this section entirely for videos under 10 minutes with no chapters
+
+**Example:**
+**[[3:20]](https://www.youtube.com/watch?v={{VIDEO_ID}}&t=200s) Step 1: Create Goldens**
+Input-output pairs that define ideal behavior. Covers the angry customer example and how teams might write hundreds of these for edge cases.
 
 ## STYLE RULES (CRITICAL)
 - Use "you" and active voice
