@@ -11,10 +11,13 @@ Supported Providers:
   - OpenRouter (Amazon Nova 2 Lite) (FREE - 32K token context)
 
 Usage:
-    python app.py                           # Interactive mode
-    python app.py "https://youtube.com/..." # Direct URL mode
+    python app.py                                    # Interactive mode
+    python app.py "https://youtube.com/..."          # Direct URL, interactive prompt selection
+    python app.py "URL" --prompt study-notes         # Use specific prompt
+    python app.py --prompt quick-summary "URL"       # Argument order flexible
 """
 
+import argparse
 import json
 import os
 import re
@@ -22,7 +25,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict, Callable, List
 from urllib.parse import urlparse, parse_qs
 
 import requests
@@ -36,12 +39,25 @@ load_dotenv(override=True)
 # Import provider configurations from external file
 from providers import PROVIDERS
 
+
+# ============================================================
+# CUSTOM EXCEPTIONS
+# ============================================================
+
+class TokenLimitExceeded(Exception):
+    """Raised when a request exceeds TPM (tokens per minute) limits."""
+    def __init__(self, limit: int, requested: int, message: str):
+        self.limit = limit
+        self.requested = requested
+        super().__init__(message)
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 OUTPUT_FOLDER = "YouTubeNotes"
-SYSTEM_PROMPT_FILE = "gpt-inst.md"
+PROMPTS_FOLDER = "prompts"
+DEFAULT_PROMPT = "study-notes"
 REQUEST_TIMEOUT = 300  # 5 minutes
 MAX_OUTPUT_TOKENS = 8192
 
@@ -96,6 +112,22 @@ def parse_api_error(response: requests.Response, provider: str) -> str:
         return err_json.get("error", {}).get("message", response.text)
     except Exception:
         return response.text
+
+
+def parse_tpm_error(error_message: str) -> dict | None:
+    """
+    Parse TPM error to extract limit and requested tokens.
+    
+    Example error:
+    "Request too large... Limit 12000, Requested 20322..."
+    
+    Returns:
+        {"limit": 12000, "requested": 20322} or None if not a TPM error
+    """
+    match = re.search(r'Limit\s+(\d+),\s*Requested\s+(\d+)', error_message, re.IGNORECASE)
+    if match:
+        return {"limit": int(match.group(1)), "requested": int(match.group(2))}
+    return None
 
 
 # ============================================================
@@ -186,6 +218,77 @@ def select_provider_with_stats(word_count: int) -> str:
 
 
 # ============================================================
+# PROMPT SELECTION
+# ============================================================
+
+def get_available_prompts() -> List[str]:
+    """Scan prompts folder and return list of available prompt names."""
+    prompts_dir = os.path.join(get_script_dir(), PROMPTS_FOLDER)
+    if not os.path.exists(prompts_dir):
+        return []
+    
+    prompts = []
+    for f in sorted(os.listdir(prompts_dir)):
+        if f.endswith(".md"):
+            prompts.append(f[:-3])  # Remove .md extension
+    return prompts
+
+
+def get_prompt_description(prompt_name: str) -> str:
+    """Get first line of prompt file as description."""
+    path = os.path.join(get_script_dir(), PROMPTS_FOLDER, f"{prompt_name}.md")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            first_line = f.readline().strip()
+            # Remove markdown heading markers
+            return first_line.lstrip("#").strip()[:60]
+    except Exception:
+        return "Custom prompt template"
+
+
+def select_prompt() -> str:
+    """Display prompt menu and return selected prompt name."""
+    prompts = get_available_prompts()
+    
+    if not prompts:
+        print("\n❌ No prompts found in prompts/ folder!")
+        sys.exit(1)
+    
+    if len(prompts) == 1:
+        return prompts[0]
+    
+    print("\n" + "=" * 60)
+    print("  📝 Select Note Format")
+    print("=" * 60)
+    
+    for idx, prompt in enumerate(prompts, 1):
+        is_default = prompt == DEFAULT_PROMPT
+        default_tag = " [DEFAULT]" if is_default else ""
+        description = get_prompt_description(prompt)
+        print(f"\n  {idx}. {prompt}{default_tag}")
+        print(f"     {description}")
+    
+    print("\n" + "-" * 60)
+    
+    # Find default index
+    default_idx = prompts.index(DEFAULT_PROMPT) + 1 if DEFAULT_PROMPT in prompts else 1
+    
+    while True:
+        try:
+            choice = input(f"\nEnter choice (1-{len(prompts)}) or press Enter for default [{default_idx}]: ").strip()
+            
+            if not choice:
+                return prompts[default_idx - 1]
+            
+            idx = int(choice) - 1
+            if 0 <= idx < len(prompts):
+                return prompts[idx]
+            print("   Invalid choice.")
+        except ValueError:
+            print("   Please enter a number.")
+
+
+# ============================================================
 # LLM PROVIDERS
 # ============================================================
 
@@ -213,6 +316,20 @@ def call_openai_compatible(system_prompt: str, user_message: str, config: dict) 
         },
         timeout=REQUEST_TIMEOUT,
     )
+
+    # Check for TPM limit error (413)
+    if response.status_code == 413:
+        error_text = parse_api_error(response, config['name'])
+        tpm_info = parse_tpm_error(error_text)
+        
+        if tpm_info:
+            raise TokenLimitExceeded(
+                limit=tpm_info["limit"],
+                requested=tpm_info["requested"],
+                message=error_text
+            )
+        # If we can't parse the TPM info, raise a generic exception
+        raise Exception(f"{config['name']} API Error 413: {error_text}")
 
     if response.status_code != 200:
         raise Exception(f"{config['name']} API Error {response.status_code}: {parse_api_error(response, config['name'])}")
@@ -311,8 +428,161 @@ def get_provider_function(provider: str) -> Callable[[str, str], str]:
         return lambda system, user: call_openai_compatible(system, user, config)
 
 
+# ============================================================
+# CHUNKED PROCESSING FOR LARGE TRANSCRIPTS
+# ============================================================
+
+def generate_notes_chunked(
+    provider: str,
+    system_prompt: str, 
+    transcript: str,
+    video_title: str,
+    video_id: str,
+    chapters: list = None,
+    tpm_limit: int = 12000,
+    requested_tokens: int = 0
+) -> str:
+    """
+    Generate notes using map-reduce for large transcripts that exceed TPM limits.
+    
+    Process:
+    1. Split transcript into chunks that fit within TPM limits
+    2. Summarize each chunk (MAP phase)
+    3. Combine summaries (REDUCE phase)
+    4. Generate final notes from combined summary
+    """
+    config = PROVIDERS[provider]
+    provider_fn = get_provider_function(provider)
+    
+    # Calculate chunk size based on actual token limits
+    # Leave room for prompts (~500 tokens) and output (~1000 tokens)
+    safe_input_tokens = int(tpm_limit * 0.7)  # Use 70% of limit for safety
+    chunk_char_size = safe_input_tokens * 4  # ~4 chars per token
+    
+    print(f"\n📦 Chunked Processing Mode")
+    print(f"   TPM Limit: {tpm_limit:,} | Requested: {requested_tokens:,}")
+    print(f"   Chunk size: ~{safe_input_tokens:,} tokens")
+    
+    # Split transcript into chunks with overlap for context
+    chunks = []
+    words = transcript.split()
+    current_chunk = []
+    current_size = 0
+    overlap_words = 50  # Keep last 50 words for context overlap
+    
+    for word in words:
+        word_size = len(word) + 1  # +1 for space
+        if current_size + word_size > chunk_char_size and current_chunk:
+            chunks.append(" ".join(current_chunk))
+            # Keep last N words for overlap
+            current_chunk = current_chunk[-overlap_words:] if len(current_chunk) > overlap_words else []
+            current_size = sum(len(w) + 1 for w in current_chunk)
+        current_chunk.append(word)
+        current_size += word_size
+    
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
+    
+    print(f"   Split into {len(chunks)} chunks")
+    
+    # ========== MAP PHASE: Summarize each chunk ==========
+    summaries = []
+    
+    for i, chunk in enumerate(chunks, 1):
+        # Wait between requests to respect TPM (60 seconds per window)
+        if i > 1:
+            # Calculate wait time based on how many chunks fit in TPM
+            chunks_per_minute = max(1, tpm_limit // safe_input_tokens)
+            wait_time = max(5, 65 // chunks_per_minute)  # At least 5s, ensure rate limit reset
+            print(f"   ⏳ Waiting {wait_time}s for rate limit...")
+            time.sleep(wait_time)
+        
+        print(f"   [{i}/{len(chunks)}] Summarizing chunk...")
+        
+        chunk_system = """You summarize portions of YouTube video transcripts.
+Capture: key points, examples, statistics, quotes, and actionable advice.
+Be detailed but concise (200-400 words). Preserve important technical details."""
+        
+        chunk_prompt = f"""Summarize this portion ({i}/{len(chunks)}) of a YouTube video transcript.
+
+Video: {video_title}
+
+Transcript portion:
+---
+{chunk}
+---
+
+Provide a detailed summary of this section."""
+        
+        try:
+            with ProgressIndicator(f"Processing chunk {i}/{len(chunks)}..."):
+                summary = provider_fn(chunk_system, chunk_prompt)
+            summaries.append(f"[Part {i}/{len(chunks)}]\n{summary}")
+        except TokenLimitExceeded:
+            # If still too large, use a shorter chunk
+            print(f"   ⚠️  Chunk {i} still too large, using abbreviated version...")
+            abbreviated = " ".join(chunk.split()[:500])  # First 500 words only
+            with ProgressIndicator(f"Processing abbreviated chunk {i}/{len(chunks)}..."):
+                summary = provider_fn(chunk_system, f"Summarize briefly:\n{abbreviated}")
+            summaries.append(f"[Part {i}/{len(chunks)} - abbreviated]\n{summary}")
+    
+    # ========== REDUCE PHASE: Combine summaries ==========
+    print(f"\n   🔗 Combining {len(summaries)} summaries...")
+    
+    # Wait for rate limit reset before combining
+    print(f"   ⏳ Waiting 65s for rate limit reset...")
+    time.sleep(65)
+    
+    combined = "\n\n".join(summaries)
+    
+    # Check if combined summaries need further reduction
+    combined_tokens = len(combined) // 4
+    if combined_tokens > safe_input_tokens:
+        print(f"   📝 Combined summaries too large ({combined_tokens:,} tokens), condensing...")
+        
+        condense_system = "You combine partial summaries into a unified, coherent summary. Remove redundancies while preserving all unique insights."
+        condense_prompt = f"""Combine these partial summaries of "{video_title}" into one coherent summary.
+Remove redundancies, maintain flow, preserve all unique insights.
+
+{combined}"""
+        
+        with ProgressIndicator("Condensing summaries..."):
+            combined = provider_fn(condense_system, condense_prompt)
+        
+        # Wait again before final generation
+        print(f"   ⏳ Waiting 65s for rate limit reset...")
+        time.sleep(65)
+    
+    # ========== FINAL PASS: Generate notes from summary ==========
+    print(f"\n   📝 Generating final study notes...")
+    
+    chapters_info = ""
+    if chapters:
+        chapters_info = "\n\nYouTube Chapters (use these as Key Moments):\n"
+        for ch in chapters:
+            chapters_info += f"- [{ch['time']}] ({ch['seconds']}s) {ch['title']}\n"
+        chapters_info += "\nNote: Chapters are provided. Use these for the KEY MOMENTS section instead of generating your own.\n"
+    
+    final_message = f"""Create study notes from this YouTube video.
+
+Video Title: {video_title}
+Video ID: {video_id}
+{chapters_info}
+
+IMPORTANT: The following is a CONDENSED SUMMARY of the full transcript (the original was too long).
+Generate comprehensive study notes based on this summary.
+
+Summary of Transcript:
+---
+{combined}
+---"""
+
+    with ProgressIndicator("Generating final notes..."):
+        return provider_fn(system_prompt, final_message)
+
+
 def generate_notes(provider: str, system_prompt: str, transcript: str, video_title: str, video_id: str, chapters: list = None) -> str:
-    """Generate study notes using the selected provider."""
+    """Generate study notes using the selected provider with automatic chunking on TPM errors."""
     
     # Build chapters section if available
     chapters_info = ""
@@ -336,13 +606,31 @@ def generate_notes(provider: str, system_prompt: str, transcript: str, video_tit
     # Get the appropriate function based on api_type
     provider_fn = get_provider_function(provider)
 
-    if config.get("api_type") == "zai":
-        # Z.AI streams output directly, no spinner needed
-        print()  # Blank line before streamed output
-        return provider_fn(system_prompt, user_message)
-    else:
-        with ProgressIndicator("Generating notes (this may take 1-3 minutes)..."):
+    try:
+        if config.get("api_type") == "zai":
+            # Z.AI streams output directly, no spinner needed
+            print()  # Blank line before streamed output
             return provider_fn(system_prompt, user_message)
+        else:
+            with ProgressIndicator("Generating notes (this may take 1-3 minutes)..."):
+                return provider_fn(system_prompt, user_message)
+                
+    except TokenLimitExceeded as e:
+        # Handle by switching to chunked processing
+        print(f"\n⚠️  Token limit exceeded!")
+        print(f"   Limit: {e.limit:,} | Requested: {e.requested:,}")
+        print(f"   Switching to chunked processing mode...")
+        
+        return generate_notes_chunked(
+            provider=provider,
+            system_prompt=system_prompt,
+            transcript=transcript,
+            video_title=video_title,
+            video_id=video_id,
+            chapters=chapters,
+            tpm_limit=e.limit,
+            requested_tokens=e.requested
+        )
 
 
 # ============================================================
@@ -488,9 +776,9 @@ def get_script_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def load_system_prompt() -> str:
-    """Load system prompt from gpt-inst.md file."""
-    path = os.path.join(get_script_dir(), SYSTEM_PROMPT_FILE)
+def load_system_prompt(prompt_name: str = DEFAULT_PROMPT) -> str:
+    """Load system prompt from specified file in prompts folder."""
+    path = os.path.join(get_script_dir(), PROMPTS_FOLDER, f"{prompt_name}.md")
     if not os.path.exists(path):
         raise FileNotFoundError(f"System prompt not found: {path}")
     with open(path, "r", encoding="utf-8") as f:
@@ -504,16 +792,16 @@ def sanitize_filename(title: str, max_length: int = 80) -> str:
     return safe[:max_length] or "untitled"
 
 
-def find_existing_note(video_id: str, model_name: str) -> Optional[str]:
-    """Find existing note file for the same video ID and model."""
+def find_existing_note(video_id: str, prompt_name: str, model_name: str) -> Optional[str]:
+    """Find existing note file for the same video ID, prompt, and model."""
     output_dir = os.path.join(get_script_dir(), OUTPUT_FOLDER)
     if not os.path.exists(output_dir):
         return None
 
-    # Match both video ID in content AND model name in filename
+    # Match video ID in content AND both prompt and model name in filename
     video_pattern = f"https://www.youtube.com/watch?v={video_id}"
     for filename in os.listdir(output_dir):
-        if filename.endswith(".md") and model_name in filename:
+        if filename.endswith(".md") and prompt_name in filename and model_name in filename:
             filepath = os.path.join(output_dir, filename)
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
@@ -534,25 +822,27 @@ def save_notes(
     video_title: str,
     video_id: str,
     provider: str,
+    prompt_name: str,
     channel: str = "Unknown",
     duration: str = "Unknown",
     transcript_words: int = 0,
 ) -> str:
-    """Save notes to YouTubeNotes folder. Overwrites if same video+model exists."""
+    """Save notes to YouTubeNotes folder. Overwrites if same video+prompt+model exists."""
     output_dir = os.path.join(get_script_dir(), OUTPUT_FOLDER)
     os.makedirs(output_dir, exist_ok=True)
 
     # Use nickname for shorter filenames
     nickname = PROVIDERS[provider]["nickname"]
 
-    # Check for existing note with same video ID and provider
-    existing = find_existing_note(video_id, nickname)
+    # Check for existing note with same video ID, prompt, and provider
+    existing = find_existing_note(video_id, prompt_name, nickname)
     if existing:
         filepath = existing
         print(f"   Overwriting: {os.path.basename(filepath)}")
     else:
         # Use shorter title (40 chars) for compact filenames
-        filename = f"{video_id}_{sanitize_filename(video_title, max_length=40)}_{nickname}.md"
+        # Format: {video_id}_{title}_{prompt}_{provider}.md
+        filename = f"{video_id}_{sanitize_filename(video_title, max_length=40)}_{prompt_name}_{nickname}.md"
         filepath = os.path.join(output_dir, filename)
 
     # Calculate read time based on notes word count
@@ -566,6 +856,7 @@ def save_notes(
         f"Channel: {channel}\n"
         f"Duration: {duration}\n"
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Prompt: {prompt_name}\n"
         f"Provider: {PROVIDERS[provider]['name']}\n"
         f"Transcript Words: ~{transcript_words:,}\n"
         f"-->\n\n"
@@ -584,19 +875,46 @@ def save_notes(
 # MAIN
 # ============================================================
 
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="YouTube Study Notes Generator - Convert YouTube videos into structured study notes using AI.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python app.py                                    # Interactive mode
+  python app.py "https://youtube.com/..."          # Direct URL, interactive prompt selection
+  python app.py "URL" --prompt study-notes         # Use specific prompt
+  python app.py --prompt quick-summary "URL"       # Argument order flexible
+        """
+    )
+    parser.add_argument(
+        "url",
+        nargs="?",
+        help="YouTube video URL"
+    )
+    parser.add_argument(
+        "--prompt", "-p",
+        help=f"Prompt template to use (default: {DEFAULT_PROMPT}). Available prompts are in the prompts/ folder."
+    )
+    return parser.parse_args()
+
+
 def main():
     """Main entry point."""
+    args = parse_args()
+    
     print("\n" + "=" * 60)
     print("  📚 YouTube Study Notes Generator")
     print("=" * 60)
 
-    # Get URL first
-    url = sys.argv[1] if len(sys.argv) > 1 else input("\n🎬 Enter YouTube URL: ").strip()
+    # Get URL
+    url = args.url if args.url else input("\n🎬 Enter YouTube URL: ").strip()
     if not url:
         print("❌ No URL provided.")
         sys.exit(1)
 
-    if len(sys.argv) > 1:
+    if args.url:
         print(f"\n🎬 YouTube URL: {url}")
 
     try:
@@ -627,13 +945,26 @@ def main():
         transcript_words = len(transcript.split())
         print(f"   Transcript: {transcript_words:,} words")
 
-        # Now select provider with stats
+        # Select prompt (CLI argument or interactive)
+        if args.prompt:
+            prompt_name = args.prompt
+            available_prompts = get_available_prompts()
+            if prompt_name not in available_prompts:
+                print(f"\n❌ Prompt '{prompt_name}' not found.")
+                print(f"   Available prompts: {', '.join(available_prompts)}")
+                sys.exit(1)
+            print(f"\n📝 Using prompt: {prompt_name}")
+        else:
+            prompt_name = select_prompt()
+            print(f"\n✅ Selected prompt: {prompt_name}")
+
+        # Select provider with stats
         provider = select_provider_with_stats(transcript_words)
-        print(f"\n✅ Selected: {PROVIDERS[provider]['name']}")
+        print(f"\n✅ Selected provider: {PROVIDERS[provider]['name']}")
 
         print("\n📋 Loading system prompt...")
-        system_prompt = load_system_prompt()
-        print(f"   Loaded: {SYSTEM_PROMPT_FILE}")
+        system_prompt = load_system_prompt(prompt_name)
+        print(f"   Loaded: {PROMPTS_FOLDER}/{prompt_name}.md")
 
         # Generate and save
         notes = generate_notes(
@@ -651,6 +982,7 @@ def main():
             video_title=video_info["title"],
             video_id=video_id,
             provider=provider,
+            prompt_name=prompt_name,
             channel=video_info["channel"],
             duration=video_info["duration"],
             transcript_words=transcript_words,

@@ -10,7 +10,7 @@ Convert YouTube videos into structured, consultant-optimized study notes using A
 - **Easy provider configuration** — Add new providers via `providers.py` without code changes
 - **Automatic transcription** — Fetches YouTube's auto-generated captions
 - **YouTube chapters integration** — Uses built-in video chapters as key moments when available
-- **Custom note format** — Uses your `gpt-inst.md` template for consistent output
+- **Multiple prompt templates** — Choose from different note formats via CLI or interactive menu
 - **Smart overwriting** — Re-running on the same video updates the existing note
 - **Transcript caching** — Transcripts are saved locally to avoid re-fetching
 - **Progress indicator** — Visual feedback during generation
@@ -87,6 +87,32 @@ Or with a URL directly:
 python app.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
+Or specify a prompt template:
+```bash
+python app.py "URL" --prompt study-notes
+```
+
+---
+
+## Quick Command: `ytnotes`
+
+A shortcut command is available so you don't need to activate the virtual environment manually.
+
+**First time setup** (run once after installation):
+```bash
+source ~/.zshrc
+```
+
+**Then use from anywhere:**
+```bash
+ytnotes                              # Interactive mode
+ytnotes "URL"                        # With URL
+ytnotes "URL" --prompt study-notes   # With specific prompt
+ytnotes "URL" -p quick-summary       # Short form
+```
+
+This is equivalent to `cd /path/to/project && source venv/bin/activate && python app.py`.
+
 ---
 
 ## Usage
@@ -95,11 +121,33 @@ python app.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```bash
 python app.py
 ```
-You'll be prompted for a YouTube URL, then shown provider options with token usage stats.
+You'll be prompted for a YouTube URL, then shown prompt and provider options.
 
 ### Direct URL Mode
 ```bash
 python app.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+### With Specific Prompt
+```bash
+python app.py "URL" --prompt study-notes      # Use study-notes template
+python app.py --prompt quick-summary "URL"    # Argument order is flexible
+python app.py -p study-notes "URL"            # Short form
+```
+
+### Prompt Selection
+```
+============================================================
+  📝 Select Note Format
+============================================================
+
+  1. study-notes [DEFAULT]
+     You are a Study-Note Generator creating notes for a profes
+
+  2. quick-summary
+     Create a concise bullet-point summary of the video
+
+Enter choice (1-2) or press Enter for default [1]: 
 ```
 
 ### Provider Selection
@@ -131,10 +179,10 @@ Enter choice (1-4): 1
 ### Find Your Notes
 Generated notes are saved to:
 ```
-YouTubeNotes/<video_id>_<video_title>_<nickname>.md
+YouTubeNotes/<video_id>_<title>_<prompt>_<provider>.md
 ```
 
-Example: `dC8e2hHXmgM_How_to_AI_Evals_gemini2.5Flash.md`
+Example: `dC8e2hHXmgM_How_to_AI_Evals_study-notes_gemini2.5Flash.md`
 
 ---
 
@@ -212,8 +260,10 @@ Most modern LLM providers use OpenAI-compatible APIs. To add one, simply add an 
 ```
 youtube-studynotes/
 ├── app.py              # Main application logic
+├── run.sh              # Quick run script (used by ytnotes alias)
 ├── providers.py        # Provider configurations (add new providers here!)
-├── gpt-inst.md         # Note format template (customizable)
+├── prompts/            # Prompt templates folder
+│   └── study-notes.md  # Default study notes format
 ├── requirements.txt    # Python dependencies
 ├── .env                # API keys (create this, not committed)
 ├── .gitignore          # Git ignore rules
@@ -221,16 +271,48 @@ youtube-studynotes/
 └── YouTubeNotes/       # Generated notes output
     ├── transcripts/    # Cached transcripts
     │   └── <video_id>.txt
-    └── <video_id>_<title>_<nickname>.md
+    └── <video_id>_<title>_<prompt>_<provider>.md
 ```
 
 ---
 
 ## Customizing Note Format
 
-Edit `gpt-inst.md` to change how notes are structured. The AI follows this template when generating notes.
+### Using Different Prompts
 
-Current template sections:
+The app supports multiple prompt templates stored in the `prompts/` folder. Each `.md` file is a separate template.
+
+```bash
+# Use default (study-notes)
+python app.py "URL"
+
+# Use a specific prompt
+python app.py "URL" --prompt quick-summary
+
+# Interactive selection
+python app.py "URL"  # Shows menu if multiple prompts exist
+```
+
+### Creating Custom Prompts
+
+1. Create a new `.md` file in the `prompts/` folder
+2. The first line becomes the description shown in the selection menu
+3. Write your system prompt instructions
+
+Example: `prompts/quick-summary.md`
+```markdown
+Create a concise bullet-point summary of the video content.
+
+## Instructions
+- Summarize the main points in 5-10 bullet points
+- Keep each point under 2 sentences
+- Focus on actionable takeaways
+...
+```
+
+### Default Template (study-notes.md)
+
+The default `study-notes.md` template creates comprehensive study notes with:
 1. **Title & Discovery Tags** — Clear title with hashtags
 2. **The Hook** — Why this topic matters
 3. **Core Concept** — The WHAT and WHY
