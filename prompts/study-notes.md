@@ -51,13 +51,11 @@ Example: "Blockchain: How Distributed Ledgers Create Trust Without Intermediarie
 **Hashtags:** 5-8 tags for discovery. Mix broad (#AI, #Finance) with specific (#ProofOfWork, #SmartContracts).
 
 ### Summary
-Output this as a SINGLE section with two paragraphs:
+Output this as a SINGLE section with at max two paragraphs:
 
 **Paragraph 1:** 25-word overview including who is presenting and what the content covers.
 
-**Paragraph 2:** Start with bold "**Why It Matters:**" followed by ≤50 words. Use one of: a pain point the viewer feels, a misconception corrected, or a surprising insight. No generic phrases. Get straight to the tension.
-
-*Skip the "Why It Matters" paragraph for Tutorial/How-To videos.*
+**Paragraph 2 (skip for Tutorial/How-To videos):** Start with bold "**Why It Matters:**" followed by ≤50 words. Use one of: a pain point the viewer feels, a misconception corrected, or a surprising insight. No generic phrases. Get straight to the tension.
 
 **Example output:**
 > ### Summary
@@ -119,9 +117,11 @@ Extract all books, tools, frameworks, people, or projects mentioned by the speak
 ### 8. Key Moments
 Use YouTube chapters if provided; otherwise create 5-8 key moments from the transcript.
 
-**Format:** `**[[MM:SS]](https://www.youtube.com/watch?v={{VIDEO_ID}}&t=XXs) Title**` + 1-2 sentence summary
+**Format example:**
+> **[[3:20]](https://www.youtube.com/watch?v={{VIDEO_ID}}&t=200s) Step 1: Create Goldens**
+> 1-2 sentence summary of what this section covers.
 
-**Rules:** Convert MM:SS to seconds for `t=` param (e.g., 3:20 → 200s). Each summary should be self-contained. Skip for videos <10 min with no chapters.
+**Rules:** Convert MM:SS to seconds for the t= param. Each summary should be self-contained. Skip for videos <10 min with no chapters.
 
 ## STYLE RULES
 - Active voice, "you" address, varied sentence lengths
