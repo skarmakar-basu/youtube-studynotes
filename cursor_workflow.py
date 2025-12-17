@@ -8,6 +8,7 @@ import os
 import sys
 import re
 import json
+import argparse
 import requests
 from pathlib import Path
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -349,10 +350,33 @@ def prepare_for_cursor(url):
     print("\n" + "=" * 60)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        url = input("Enter YouTube URL: ").strip()
-    else:
-        url = sys.argv[1]
+    parser = argparse.ArgumentParser(
+        description="YouTube Study Notes - Cursor Workflow: Download transcripts and queue for Cursor processing",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python cursor_workflow.py "https://youtube.com/watch?v=VIDEO_ID"
+  python cursor_workflow.py                                    # Interactive mode
+  
+The script downloads the transcript and adds it to CURSOR_TASK.md queue.
+Then use Cursor to process all queued videos with: "Complete the task in CURSOR_TASK.md"
+        """
+    )
+    parser.add_argument(
+        "url",
+        nargs="?",
+        help="YouTube video URL"
+    )
     
-    prepare_for_cursor(url)
+    args = parser.parse_args()
+    
+    if args.url:
+        prepare_for_cursor(args.url)
+    else:
+        url = input("Enter YouTube URL: ").strip()
+        if url:
+            prepare_for_cursor(url)
+        else:
+            print("❌ No URL provided.")
+            sys.exit(1)
 
