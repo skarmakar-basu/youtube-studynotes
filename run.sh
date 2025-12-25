@@ -1,8 +1,8 @@
 #!/bin/bash
-# YouTube Study Notes Generator - Quick Run Script
-# Usage: ./run.sh [URL] [--prompt PROMPT]
+# YouTube Study Notes Generator - Unified Workflow
+# Usage: ./run.sh [URL]
 
 cd "$(dirname "$0")"
 source venv/bin/activate
-python app.py "$@"
+python main.py "$@"
 

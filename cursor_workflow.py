@@ -349,6 +349,59 @@ def prepare_for_cursor(url):
     print("\n   Cursor will process all videos sequentially until the queue is empty.")
     print("\n" + "=" * 60)
 
+
+def prepare_for_cursor_with_transcript(url: str, transcript: str, metadata: dict):
+    """
+    Prepare transcript for Cursor workflow when transcript is already downloaded.
+    This function is called by main.py.
+
+    Args:
+        url: YouTube video URL
+        transcript: Plain text transcript (already downloaded)
+        metadata: Video metadata dict
+    """
+    # Extract video ID
+    video_id = extract_video_id(url)
+    if not video_id:
+        print("❌ Invalid YouTube URL")
+        return
+
+    # Save transcript
+    transcript_dir = Path("YouTubeNotes/transcripts")
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+
+    transcript_path = transcript_dir / f"{video_id}.txt"
+    with open(transcript_path, "w", encoding="utf-8") as f:
+        f.write(transcript)
+
+    # Add transcript file path to CURSOR_TASK.md queue (append mode)
+    staging_path = Path("CURSOR_TASK.md")
+
+    # Append transcript path to queue file
+    transcript_path_str = str(transcript_path)
+    with open(staging_path, "a", encoding="utf-8") as f:
+        f.write(f"{transcript_path_str}\n")
+
+    # Count total videos in queue
+    queue_count = 0
+    if staging_path.exists():
+        with open(staging_path, "r", encoding="utf-8") as f:
+            queue_count = len([line.strip() for line in f if line.strip()])
+
+    print("\n" + "=" * 60)
+    print("✅ TRANSCRIPT ADDED TO QUEUE!")
+    print("=" * 60)
+    print(f"\n📄 Transcript saved: {transcript_path}")
+    print(f"📋 Added to queue: CURSOR_TASK.md")
+    print(f"📊 Total videos in queue: {queue_count}")
+    print(f"\n🎯 NEXT STEPS:")
+    print("   1. Add more videos (optional): Run this script again with more URLs")
+    print("   2. Process all videos: In Cursor Chat, say:")
+    print("      'Complete the task in CURSOR_TASK.md'")
+    print("\n   Cursor will process all videos sequentially until the queue is empty.")
+    print("\n" + "=" * 60)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="YouTube Study Notes - Cursor Workflow: Download transcripts and queue for Cursor processing",

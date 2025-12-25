@@ -40,6 +40,18 @@ load_dotenv(override=True)
 # Import provider configurations from external file
 from providers import PROVIDERS
 
+# Import shared transcript utilities
+from transcript_utils import (
+    extract_video_id,
+    get_video_metadata as get_video_info,
+    download_transcript as fetch_transcript,
+    get_script_dir,
+    load_cached_transcript,
+    save_transcript_to_cache,
+    estimate_tokens,
+    format_duration,
+)
+
 
 # ============================================================
 # CUSTOM EXCEPTIONS
@@ -63,14 +75,9 @@ class RestartException(Exception):
 
 OUTPUT_FOLDER = "YouTubeNotes"
 PROMPTS_FOLDER = "prompts"
-DEFAULT_PROMPT = "study-notes"
+DEFAULT_PROMPT = "youtube-summary"
 REQUEST_TIMEOUT = 300  # 5 minutes
 MAX_OUTPUT_TOKENS = 8192
-
-
-def estimate_tokens(word_count: int) -> int:
-    """Estimate token count from word count (roughly 1.3 tokens per word for English)."""
-    return int(word_count * 1.3)
 
 
 # ============================================================
@@ -145,27 +152,34 @@ def get_available_providers() -> Dict[str, dict]:
     return {
         key: config
         for key, config in PROVIDERS.items()
-        if os.getenv(config["env_key"])
+        if config.get("env_key") and os.getenv(config["env_key"])
     }
 
 
 def select_provider_with_stats(word_count: int) -> str:
     """Display provider menu with token usage stats and return selected provider key."""
     estimated_tokens = estimate_tokens(word_count)
-    
+
     print("\n" + "=" * 60)
     print("  🤖 Select AI Provider")
     print("=" * 60)
     print(f"\n  📊 Transcript: ~{word_count:,} words (~{estimated_tokens:,} tokens)")
     print("-" * 60)
 
-    provider_keys = list(PROVIDERS.keys())
+    # Filter out providers that don't need API keys (like Cursor)
+    api_providers = {
+        key: config
+        for key, config in PROVIDERS.items()
+        if config.get("env_key")  # Only include providers that need API keys
+    }
+
+    provider_keys = list(api_providers.keys())
     available = get_available_providers()
-    
+
     # Find best recommendation (available provider with lowest usage that fits and doesn't exceed rate limit)
     best_provider = None
     best_usage = float('inf')
-    for key, config in PROVIDERS.items():
+    for key, config in api_providers.items():
         if key in available:
             usage = (estimated_tokens / config["context_tokens"]) * 100
             rate_limit = config.get("rate_limit_tpm")
@@ -174,12 +188,12 @@ def select_provider_with_stats(word_count: int) -> str:
                 best_usage = usage
                 best_provider = key
 
-    for idx, (key, config) in enumerate(PROVIDERS.items(), 1):
+    for idx, (key, config) in enumerate(api_providers.items(), 1):
         is_available = key in available
         usage_pct = (estimated_tokens / config["context_tokens"]) * 100
         rate_limit = config.get("rate_limit_tpm")
         exceeds_rate_limit = rate_limit and estimated_tokens > rate_limit
-        
+
         # Status indicators
         if not is_available:
             status = "❌ (no API key)"
@@ -193,14 +207,14 @@ def select_provider_with_stats(word_count: int) -> str:
         else:
             status = f"✅ Usage: {usage_pct:.1f}%"
             recommend = " ⭐ Recommended" if key == best_provider else ""
-        
+
         tag = " [FREE]" if config["free"] else " [PAID]"
         print(f"\n  {idx}. {config['name']}{tag}{recommend}")
         print(f"     Context: {config['context']} | {status}")
 
     print("\n" + "-" * 60)
     print("\nOptions:")
-    print("  [1-{}]: Select option".format(len(PROVIDERS)))
+    print("  [1-{}]: Select option".format(len(api_providers)))
     print("  [r]: Restart from beginning")
 
     if not available:
@@ -213,18 +227,18 @@ def select_provider_with_stats(word_count: int) -> str:
 
     while True:
         try:
-            choice = input(f"\nEnter choice (1-{len(PROVIDERS)}): ").strip().lower()
-            
+            choice = input(f"\nEnter choice (1-{len(api_providers)}): ").strip().lower()
+
             # Handle restart option
             if choice in ['r', 'restart']:
                 raise RestartException()
-            
+
             idx = int(choice) - 1
             if 0 <= idx < len(provider_keys):
                 selected = provider_keys[idx]
                 if selected in available:
                     return selected
-                print(f"   ❌ {PROVIDERS[selected]['name']} not configured.")
+                print(f"   ❌ {api_providers[selected]['name']} not configured.")
             else:
                 print("   Invalid choice.")
         except ValueError:
@@ -582,7 +596,24 @@ Remove redundancies, maintain flow, preserve all unique insights.
     if chapters:
         chapters_info = "\n\nYouTube Chapters (use these as Key Moments):\n"
         for ch in chapters:
-            chapters_info += f"- [{ch['time']}] ({ch['seconds']}s) {ch['title']}\n"
+            # Handle both raw yt-dlp format and formatted chapters
+            # Raw yt-dlp: {'start_time': float, 'end_time': float, 'title': str}
+            # Formatted: {'time': str, 'seconds': int, 'title': str}
+            if 'start_time' in ch:
+                # Raw yt-dlp format - convert to expected format
+                start_time = ch['start_time']
+                minutes = int(start_time // 60)
+                seconds = int(start_time % 60)
+                time_str = f"{minutes}:{seconds:02d}"
+                title = ch.get('title', 'Unknown Chapter')
+                chapters_info += f"- [{time_str}] ({int(start_time)}s) {title}\n"
+            elif 'time' in ch and 'seconds' in ch:
+                # Already formatted
+                chapters_info += f"- [{ch['time']}] ({ch['seconds']}s) {ch['title']}\n"
+            else:
+                # Fallback for unexpected formats
+                title = ch.get('title', 'Unknown Chapter')
+                chapters_info += f"- {title}\n"
         chapters_info += "\nNote: Chapters are provided. Use these for the KEY MOMENTS section instead of generating your own.\n"
     
     final_message = f"""Create study notes from this YouTube video.
@@ -611,7 +642,24 @@ def generate_notes(provider: str, system_prompt: str, transcript: str, video_tit
     if chapters:
         chapters_info = "\n\nYouTube Chapters (use these as Key Moments):\n"
         for ch in chapters:
-            chapters_info += f"- [{ch['time']}] ({ch['seconds']}s) {ch['title']}\n"
+            # Handle both raw yt-dlp format and formatted chapters
+            # Raw yt-dlp: {'start_time': float, 'end_time': float, 'title': str}
+            # Formatted: {'time': str, 'seconds': int, 'title': str}
+            if 'start_time' in ch:
+                # Raw yt-dlp format - convert to expected format
+                start_time = ch['start_time']
+                minutes = int(start_time // 60)
+                seconds = int(start_time % 60)
+                time_str = f"{minutes}:{seconds:02d}"
+                title = ch.get('title', 'Unknown Chapter')
+                chapters_info += f"- [{time_str}] ({int(start_time)}s) {title}\n"
+            elif 'time' in ch and 'seconds' in ch:
+                # Already formatted
+                chapters_info += f"- [{ch['time']}] ({ch['seconds']}s) {ch['title']}\n"
+            else:
+                # Fallback for unexpected formats
+                title = ch.get('title', 'Unknown Chapter')
+                chapters_info += f"- {title}\n"
         chapters_info += "\nNote: Chapters are provided. Use these for the KEY MOMENTS section instead of generating your own.\n"
     
     user_message = (
@@ -1375,16 +1423,26 @@ def extract_title_from_notes(notes: str) -> str:
 
 
 def extract_tags_from_notes(notes: str) -> list:
-    """Extract AI-generated tags from the **Tags:** line in notes."""
-    # Look for the Tags line: **Tags:** Tag1, Tag2, ...
-    match = re.search(r'\*\*Tags:\*\*\s*(.+?)(?:\n|$)', notes)
-    if match:
-        tags_line = match.group(1)
-        # Split by comma and clean each tag
-        tags = [tag.strip() for tag in tags_line.split(',')]
-        # Remove any empty tags and limit length
-        tags = [tag for tag in tags if tag and len(tag) > 1]
-        return tags[:10]
+    """Extract AI-generated tags from notes. Handles multiple LLM formats."""
+    patterns = [
+        r'\*\*Tags?:\*\*\s*(.+?)(?:\n|$)',      # **Tags:** or **Tag:** (bold with colon)
+        r'\*\*Tags?\*\*:\s*(.+?)(?:\n|$)',       # **Tags**: or **Tags**: (bold colon separated)
+        r'Tags?:\s*(.+?)(?:\n|$)',               # Tags: or Tag: (no markdown)
+        r'🏷\s*(.+?)(?:\n|$)',                   # Emoji tag format
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, notes, re.IGNORECASE)
+        if match:
+            tags_line = match.group(1)
+            # Split by comma, pipe, or semicolon
+            tags = re.split(r'[,|;]', tags_line)
+            # Clean each tag
+            tags = [tag.strip().strip('`\'"') for tag in tags]
+            # Remove any empty tags and limit length
+            tags = [tag for tag in tags if tag and len(tag) > 1]
+            return tags[:10]
+
     return []
 
 
@@ -1432,29 +1490,30 @@ def strip_title_and_tags_from_notes(notes: str) -> str:
     result_lines = []
     skip_next_empty = False
     found_title = False
-    
+
     for line in lines:
         stripped = line.strip()
-        
+
         # Skip the title line (first ### that's not Summary or numbered)
+        # Handles both: "### Title" and "### **Title**" formats
         if not found_title and stripped.startswith('### ') and not stripped.startswith('### Summary') and not re.match(r'### \d+\.', stripped):
             found_title = True
             skip_next_empty = True
             continue
-        
-        # Skip the Tags line
-        if stripped.startswith('**Tags:**'):
+
+        # Skip the Tags line (handle various formats)
+        if re.match(r'\*\*Tags?\*:\*', stripped) or re.match(r'Tags?:', stripped):
             skip_next_empty = True
             continue
-        
+
         # Skip empty line after removed content
         if skip_next_empty and not stripped:
             skip_next_empty = False
             continue
-        
+
         skip_next_empty = False
         result_lines.append(line)
-    
+
     return '\n'.join(result_lines)
 
 
@@ -1482,14 +1541,12 @@ def publish_to_notion(
     
     notion = NotionClient(auth=notion_key)
     
-    # Extract title from notes
-    notes_title = extract_title_from_notes(notes)
-    
     # Auto-generate tags from content
     tags = generate_tags_from_content(notes, video_title, channel, prompt_name)
-    
-    # Use extracted title if available, otherwise fall back to video title
-    page_title = notes_title if notes_title else video_title
+
+    # Always use YouTube video title (never extract from LLM-generated notes)
+    # This ensures consistency across all LLM providers
+    page_title = video_title
     
     # Strip title from body content (title goes in page property)
     body_content = strip_title_and_tags_from_notes(notes)
@@ -1562,6 +1619,136 @@ Examples:
         help=f"Prompt template to use (default: {DEFAULT_PROMPT}). Available prompts are in the prompts/ folder."
     )
     return parser.parse_args()
+
+
+def generate_notes_from_transcript(video_id: str, transcript: str, metadata: dict, prompt_name: str = None) -> tuple:
+    """
+    Generate notes from a pre-downloaded transcript.
+    This function is called by main.py when transcript is already downloaded.
+
+    Args:
+        video_id: YouTube video ID
+        transcript: Plain text transcript
+        metadata: Video metadata dict (title, channel, duration, chapters)
+        prompt_name: Optional prompt template name (if None, will prompt user)
+
+    Returns:
+        Tuple of (notes: str, provider: str, prompt_name: str)
+    """
+    # Prompt selection loop (allows going back from provider menu)
+    provider_selected = False
+    final_provider = None
+    final_prompt_name = None
+
+    while not provider_selected:
+        try:
+            # Select prompt if not provided
+            if not prompt_name:
+                prompt_name = select_prompt()
+            else:
+                available_prompts = get_available_prompts()
+                if prompt_name not in available_prompts:
+                    print(f"\n❌ Prompt '{prompt_name}' not found.")
+                    print(f"   Available prompts: {', '.join(available_prompts)}")
+                    sys.exit(1)
+
+            # Select provider
+            transcript_words = len(transcript.split())
+            provider = select_provider_with_stats(transcript_words)
+
+            # If we get here, both selections succeeded
+            final_provider = provider
+            final_prompt_name = prompt_name
+            provider_selected = True
+
+        except RestartException:
+            # Restart prompt selection
+            prompt_name = None
+            continue
+
+    # Load system prompt
+    system_prompt = load_system_prompt(final_prompt_name)
+
+    # Generate notes
+    notes = generate_notes(
+        final_provider,
+        system_prompt,
+        transcript,
+        metadata.get('title', video_id),
+        video_id,
+        chapters=metadata.get('chapters', []),
+    )
+
+    return notes, final_provider, final_prompt_name
+
+
+def save_notes(video_id: str, notes: str, metadata: dict, prompt_name: str = None, provider: str = None) -> str:
+    """
+    Save generated notes to file.
+
+    Args:
+        video_id: YouTube video ID
+        notes: Generated notes content
+        metadata: Video metadata dict
+        prompt_name: Prompt template used
+        provider: AI provider used
+
+    Returns:
+        Path to saved file
+    """
+    output_dir = os.path.join(get_script_dir(), OUTPUT_FOLDER)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Create filename
+    safe_title = re.sub(r'[^\w\s-]', '', metadata.get('title', video_id)).strip()
+    safe_title = re.sub(r'[-\s]+', '-', safe_title)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if prompt_name:
+        filename = f"{timestamp}_{safe_title}_{prompt_name}.md"
+    else:
+        filename = f"{timestamp}_{safe_title}.md"
+
+    filepath = os.path.join(output_dir, filename)
+
+    # Add metadata header
+    header_lines = []
+    header_lines.append(f"# {metadata.get('title', 'Unknown')}")
+    header_lines.append("")
+    header_lines.append(f"**Source:** https://www.youtube.com/watch?v={video_id}")
+    header_lines.append(f"**Channel:** {metadata.get('channel', 'Unknown')}")
+
+    if metadata.get('duration'):
+        duration = metadata['duration']
+        if isinstance(duration, int):
+            hours = duration // 3600
+            minutes = (duration % 3600) // 60
+            secs = duration % 60
+            if hours > 0:
+                duration_str = f"{hours}h {minutes}m {secs}s"
+            elif minutes > 0:
+                duration_str = f"{minutes}m {secs}s"
+            else:
+                duration_str = f"{secs}s"
+            header_lines.append(f"**Duration:** {duration_str}")
+
+    if provider:
+        header_lines.append(f"**AI Provider:** {PROVIDERS[provider]['name']}")
+
+    if prompt_name:
+        header_lines.append(f"**Prompt Template:** {prompt_name}")
+
+    header_lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    header_lines.append("")
+    header_lines.append("---")
+    header_lines.append("")
+
+    # Write to file
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(header_lines))
+        f.write(notes)
+
+    return filepath
 
 
 def main():
